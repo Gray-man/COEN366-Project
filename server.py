@@ -84,9 +84,6 @@ def register_client(message, address):
     if len(message) != 7:
         return "REGISTER-DENIED " + message[1] + " Invalid_Message_Format"
 
-    if message[2] in users:
-        return "REGISTER-DENIED " + message[1] + " Name_Already_Exists"
-
     if message[3] not in ["SUBSCRIBER", "PUBLISHER", "BOTH"]:
         return "REGISTER-DENIED " + message[1] + " Invalid_Role"
 
@@ -112,6 +109,17 @@ def register_client(message, address):
     if message[4] != address[0] or udp_port != address[1]:
         return "REGISTER-DENIED " + message[1] + " Address_Mismatch"
 
+    if message[2] in users:
+        existing = users[message[2]]
+        if existing["ip"] == address[0] and existing["udp_port"] == address[1]:
+            # same client resending (its REGISTERED reply was probably lost)
+            return "REGISTERED " + message[1] + " [" + ", ".join(locations) + "] [" + ", ".join(categories) + "]"
+        return "REGISTER-DENIED " + message[1] + " Name_Already_Exists"
+
+    for name in users:
+        if users[name]["ip"] == address[0] and users[name]["udp_port"] == address[1]:
+            return "REGISTER-DENIED " + message[1] + " Address_In_Use"
+
     users[message[2]] = {
         "role": message[3],
         "ip": message[4],
@@ -124,7 +132,6 @@ def register_client(message, address):
 
     return "REGISTERED " + message[1] + " [" + ", ".join(locations) + "] [" + ", ".join(categories) + "]"
 
-
 def deregister_client(message, address):
 
     if len(message) != 3:
@@ -133,9 +140,8 @@ def deregister_client(message, address):
     if message[2] not in users:
         return "DEREGISTER-DENIED " + message[1] + " Client_Not_Found"
 
-    # is this necessary? do we want user to be able to deregister other users if yes then keep this commented else no then uncomment this?
-    #if users[message[2]]["ip"] != address[0] or users[message[2]]["udp_port"] != address[1]:
-    #    return "DEREGISTER-DENIED " + message[1] + " Address_Mismatch"
+    if users[message[2]]["ip"] != address[0] or users[message[2]]["udp_port"] != address[1]:
+       return "DEREGISTER-DENIED " + message[1] + " Address_Mismatch"
 
     del users[message[2]]
 
@@ -148,12 +154,6 @@ def subscribe_client(message, address):
 
     if len(message) != 4:
         return "SUBSCRIPTION-DENIED " + message[1] + " Invalid_Message_Format"
-
-    if message[2] not in locations:
-        return "SUBSCRIPTION-DENIED " + message[1] + " Invalid_Location"
-
-    if message[3] not in categories:
-        return "SUBSCRIPTION-DENIED " + message[1] + " Invalid_Category"
 
     userName = "no user"
 
@@ -168,8 +168,14 @@ def subscribe_client(message, address):
     if users[userName]["role"] not in ["SUBSCRIBER", "BOTH"]:
         return "SUBSCRIPTION-DENIED " + message[1] + " Invalid_Role"
 
+    if message[2] not in locations:
+        return "SUBSCRIPTION-DENIED " + message[1] + " Invalid_Location"
+
+    if message[3] not in categories:
+        return "SUBSCRIPTION-DENIED " + message[1] + " Invalid_Category"
+
     if (message[2], message[3]) in users[userName]["subscriptions"]:
-        return "SUBSCRIPTION-DENIED " + message[1] + " Already_Subscribed"
+        return "SUBSCRIBED " + message[1]
 
     users[userName]["subscriptions"].append((message[2], message[3]))
 
@@ -206,11 +212,15 @@ def unsubscribe_client(message, address):
 
 # Keep server running
 while True:
-    data, address = server.recvfrom(4096)
+    try:
+        data, address = server.recvfrom(4096)
 
-    message = data.decode("utf-8")
+        message = data.decode("utf-8")
 
-    print("Received:", message)
-    print("From:", address)
+        print("Received:", message)
+        print("From:", address)
 
-    handle_message(message, address)
+        handle_message(message, address)
+
+    except Exception as e:
+        print("Error:", e)

@@ -1,22 +1,9 @@
 {
-    "Alice": {
-        "role": "SUBSCRIBER",
+    "Carol": {
+        "role": "PUBLISHER",
         "ip": "127.0.0.1",
-        "udp_port": 5001,
-        "tcp_port": 6001,
-        "subscriptions": [
-            [
-                "HALL",
-                "FIRE"
-            ],
-            [
-                "EV",
-                "SECURITY"
-            ],
-            [
-                "JMSB",
-                "WEATHER"
-            ]
-        ]
+        "udp_port": 5002,
+        "tcp_port": 6002,
+        "subscriptions": []
     }
 }
