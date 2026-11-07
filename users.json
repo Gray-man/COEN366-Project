@@ -1,0 +1,22 @@
+{
+    "Alice": {
+        "role": "SUBSCRIBER",
+        "ip": "127.0.0.1",
+        "udp_port": 5001,
+        "tcp_port": 6001,
+        "subscriptions": [
+            [
+                "HALL",
+                "FIRE"
+            ],
+            [
+                "EV",
+                "SECURITY"
+            ],
+            [
+                "JMSB",
+                "WEATHER"
+            ]
+        ]
+    }
+}
