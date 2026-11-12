@@ -5,5 +5,37 @@
         "udp_port": 5002,
         "tcp_port": 6002,
         "subscriptions": []
+    },
+    "BENJAMIN": {
+        "role": "BOTH",
+        "ip": "127.0.0.1",
+        "udp_port": 5001,
+        "tcp_port": 5002,
+        "subscriptions": [
+            [
+                "ALL",
+                "WEATHER"
+            ],
+            [
+                "JMSB",
+                "FIRE"
+            ]
+        ]
+    },
+    "ADAM": {
+        "role": "BOTH",
+        "ip": "127.0.0.1",
+        "udp_port": 7001,
+        "tcp_port": 7002,
+        "subscriptions": [
+            [
+                "ALL",
+                "FIRE"
+            ],
+            [
+                "JMSB",
+                "ALL"
+            ]
+        ]
     }
 }

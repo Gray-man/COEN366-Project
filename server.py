@@ -17,6 +17,7 @@ def save_users():
         json.dump(users, file, indent=4)
 
 
+
 def load_users():
     if os.path.exists("users.json"):
         with open("users.json", "r") as file:
@@ -32,8 +33,22 @@ def load_users():
 
     return {}
 
+def save_incidents():
+    with open("incidents.json", "w") as file:
+        json.dump(incidents, file, indent=4)
+
+def load_incidents():
+    if os.path.exists("incidents.json"):
+        with open("incidents.json", "r") as file:
+            saved_incidents = json.load(file)
+        return saved_incidents
+    return {}
+
 
 users = load_users()
+incidents = load_incidents()
+incident_counter = 0
+request_counter = 0
 
 # Create a UDP socket
 server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -43,6 +58,13 @@ server.bind((SERVER_IP, SERVER_PORT))
 
 print("Emergency Server is running...")
 
+def matches_subscription(user_subscriptions, location, category):
+    for sub_location, sub_category in user_subscriptions:
+        if (sub_location == location or sub_location == "ALL") and (
+            sub_category == category or sub_category == "ALL"
+        ):
+            return True
+    return False
 
 def handle_message(message, address):
     parts = message.split()
@@ -69,6 +91,9 @@ def handle_message(message, address):
 
             case "UNSUBSCRIBE":
                 response = unsubscribe_client(parts, address)
+
+            case "PUBLISH_ALERT":
+                response = publish_alert(parts, address)
 
             case _:
                 response = "Unknown_command"
@@ -208,6 +233,107 @@ def unsubscribe_client(message, address):
 
     else:
         return "UNSUBSCRIPTION-DENIED " + message[1] + " Subscription_Not_Found"
+
+
+def generate_incident_id():
+    global incident_counter
+    incident_counter += 1
+    return "INC" + str(incident_counter).zfill(3)
+
+def generate_request_id():
+    global request_counter
+    request_counter += 1
+    return "REQ" + str(request_counter).zfill(3)
+
+def publish_alert(message, address):
+    global incidents
+
+    if len(message)!=8:
+        return "ALERT-DENIED " + message[1] + " Invalid_Message_Format"
+
+    userName = None
+
+    for name in users:
+        if users[name]["ip"] == address[0] and users[name]["udp_port"] == address[1]:
+            userName = name
+            break
+
+    if userName is None:
+        return "ALERT-DENIED " + message[1] + " Client_Not_Found"
+
+    if users[userName]["role"] not in ["PUBLISHER", "BOTH"]:
+        return "ALERT-DENIED " + message[1] + " Invalid_Role"
+
+    category = message[2]
+    location = message[3]
+    severity = message[4]
+
+    if category not in categories:
+        return "ALERT-DENIED " + message[1] + " Invalid_Category"
+    if location not in locations:
+        return "ALERT-DENIED " + message[1] + " Invalid_Location"
+    if severity not in ["INFO", "WARNING", "CRITICAL"]:
+        return "ALERT-DENIED " + message[1] + " Invalid_Severity"
+
+    incident_id = generate_incident_id()
+    incidents[incident_id] = {
+        "publisher": userName,
+        "category": category,
+        "location": location,
+        "severity": severity,
+        "title": message[5],
+        "description": message[6],
+        "attachment": message[7],
+        "version": 1,
+        "status": "ACTIVE"
+    }
+
+    save_incidents()
+    distribute_alert(incident_id)
+
+    return "ALERT_ACCEPTED " + message[1] + " " + incident_id
+
+def distribute_alert(incident_id):
+
+    incident = incidents[incident_id]
+
+    for name in users:
+
+        if users[name]["role"] not in ["SUBSCRIBER", "BOTH"]:
+            continue
+
+        subscriptions = users[name]["subscriptions"]
+
+        if matches_subscription(subscriptions, incident["location"], incident["category"]):
+
+            request_number = generate_request_id()
+
+            alert_message = (
+                "ALERT " +
+                request_number + " " +
+                incident_id + " " +
+                str(incident["version"]) + " " +
+                incident["category"] + " " +
+                incident["location"] + " " +
+                incident["severity"] + " " +
+                incident["title"] + " " +
+                incident["description"] + " " +
+                incident["attachment"]
+            )
+
+            client_address = (
+                users[name]["ip"],
+                users[name]["udp_port"]
+            )
+
+            server.sendto(alert_message.encode("utf-8"), client_address)
+
+            print("Sending alert to:", name)
+            print("Message:", alert_message)
+
+
+
+
 
 
 # Keep server running
