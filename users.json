@@ -5,5 +5,22 @@
         "udp_port": 5002,
         "tcp_port": 6002,
         "subscriptions": []
+    },
+    "Alice": {
+        "role": "SUBSCRIBER",
+        "ip": "127.0.0.1",
+        "udp_port": 5001,
+        "tcp_port": 6001,
+        "subscriptions": [
+            [
+                "HALL",
+                "FIRE"
+            ],
+            [
+                "EV",
+                "POWER"
+            ]
+        ],
+        "messages_sent": 5
     }
 }

@@ -56,6 +56,12 @@ def handle_message(message, address):
     else:
         command = parts[0]
 
+        for name in users:
+            if users[name]["ip"] == address[0] and users[name]["udp_port"] == address[1]:
+                users[name]["messages_sent"] = users[name].get("messages_sent", 0) + 1
+                save_users()
+                break
+
         match command:
 
             case "REGISTER":
@@ -113,7 +119,8 @@ def register_client(message, address):
         existing = users[message[2]]
         if existing["ip"] == address[0] and existing["udp_port"] == address[1]:
             # same client resending (its REGISTERED reply was probably lost)
-            return "REGISTERED " + message[1] + " [" + ", ".join(locations) + "] [" + ", ".join(categories) + "]"
+            # STEP 6: send back this user's saved count
+            return "REGISTERED " + message[1] + " [" + ", ".join(locations) + "] [" + ", ".join(categories) + "] " + str(existing["messages_sent"])
         return "REGISTER-DENIED " + message[1] + " Name_Already_Exists"
 
     for name in users:
@@ -125,23 +132,24 @@ def register_client(message, address):
         "ip": message[4],
         "udp_port": udp_port,
         "tcp_port": tcp_port,
-        "subscriptions": []
+        "subscriptions": [],
+        "messages_sent": 1  # STEP 4: new user starts at 1
     }
 
     save_users()
 
-    return "REGISTERED " + message[1] + " [" + ", ".join(locations) + "] [" + ", ".join(categories) + "]"
+    return "REGISTERED " + message[1] + " [" + ", ".join(locations) + "] [" + ", ".join(categories) + "] 1"
 
 def deregister_client(message, address):
 
     if len(message) != 3:
-        return "DEREGISTER-DENIED " + message[1] + " Invalid_Message_Format"
+         return "DEREGISTER-DENIED " + message[1] + " Invalid_Message_Format"
 
     if message[2] not in users:
-        return "DEREGISTER-DENIED " + message[1] + " Client_Not_Found"
+         return "DEREGISTER-DENIED " + message[1] + " Client_Not_Found"
 
     if users[message[2]]["ip"] != address[0] or users[message[2]]["udp_port"] != address[1]:
-       return "DEREGISTER-DENIED " + message[1] + " Address_Mismatch"
+        return "DEREGISTER-DENIED " + message[1] + " Address_Mismatch"
 
     del users[message[2]]
 
