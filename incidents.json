@@ -1,0 +1,46 @@
+{
+    "INC001": {
+        "publisher": "ADAM",
+        "category": "WEATHER",
+        "location": "HALL",
+        "severity": "CRITICAL",
+        "title": "SNOW_STORM",
+        "description": "CLASSES_CANCELLED",
+        "attachment": "NONE",
+        "version": 1,
+        "status": "ACTIVE"
+    },
+    "INC002": {
+        "publisher": "ADAM",
+        "category": "FIRE",
+        "location": "HALL",
+        "severity": "CRITICAL",
+        "title": "FIRE_IN_LAB",
+        "description": "GET_THE_FUCK_OUT",
+        "attachment": "NONE",
+        "version": 1,
+        "status": "ACTIVE"
+    },
+    "INC003": {
+        "publisher": "ADAM",
+        "category": "POWER",
+        "location": "JMSB",
+        "severity": "CRITICAL",
+        "title": "POWER_OUTTAGE",
+        "description": "NO_LIGHTS",
+        "attachment": "NONE",
+        "version": 1,
+        "status": "ACTIVE"
+    },
+    "INC004": {
+        "publisher": "ADAM",
+        "category": "POWER",
+        "location": "JMSB",
+        "severity": "CRITICAL",
+        "title": "POWER_OUTTAGE",
+        "description": "NO_LIGHTS",
+        "attachment": "NONE",
+        "version": 1,
+        "status": "ACTIVE"
+    }
+}

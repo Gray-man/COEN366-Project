@@ -6,21 +6,36 @@
         "tcp_port": 6002,
         "subscriptions": []
     },
-    "Alice": {
-        "role": "SUBSCRIBER",
+    "BENJAMIN": {
+        "role": "BOTH",
         "ip": "127.0.0.1",
         "udp_port": 5001,
-        "tcp_port": 6001,
+        "tcp_port": 5002,
         "subscriptions": [
             [
-                "HALL",
+                "ALL",
+                "WEATHER"
+            ],
+            [
+                "JMSB",
+                "FIRE"
+            ]
+        ]
+    },
+    "ADAM": {
+        "role": "BOTH",
+        "ip": "127.0.0.1",
+        "udp_port": 7001,
+        "tcp_port": 7002,
+        "subscriptions": [
+            [
+                "ALL",
                 "FIRE"
             ],
             [
-                "EV",
-                "POWER"
+                "JMSB",
+                "ALL"
             ]
-        ],
-        "messages_sent": 5
+        ]
     }
 }

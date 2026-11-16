@@ -5,7 +5,7 @@ SERVER_IP = "127.0.0.1"
 SERVER_PORT = 5000
 
 CLIENT_IP = "127.0.0.1"
-CLIENT_PORT = 5001
+CLIENT_PORT = 7001
 
 client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 client.bind((CLIENT_IP, CLIENT_PORT))
