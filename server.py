@@ -100,6 +100,8 @@ def handle_message(message, address):
 
             case "PUBLISH_ALERT":
                 response = publish_alert(parts, address)
+            case "ATTACH_REQ":
+                response = get_attachment_source(parts, address) # Feature 2.9 (Part A)
 
             case _:
                 response = "Unknown_command"
@@ -300,6 +302,55 @@ def publish_alert(message, address):
     distribute_alert(incident_id)
 
     return "ALERT_ACCEPTED " + message[1] + " " + incident_id
+
+# Feature 2.9 (Part A): Peer-to-Peer Incident Attachments
+def get_attachment_source(message, address):
+
+    # Read the request fields
+    request_number = message[1]
+    incident_id = message[2] if len(message) >= 3 else "NONE"
+
+    # Prepare the denied response prefix
+    denied = f"ATTACH_DENIED {request_number} {incident_id}"
+
+    # Validate that the request has all 4 required fields (command, request_number, incident_id, file_name)
+    if len(message) != 4:
+        return f"{denied} Invalid_Message_Format"
+
+    # Validate that the request is coming from a registered subscriber (matching IP and UDP port)
+    subscriber = next(
+        (user for user in users.values() if (user["ip"], user["udp_port"]) == address),
+        None,
+    )
+    if subscriber is None:
+        return f"{denied} Client_Not_Found"
+    if subscriber["role"] not in ("SUBSCRIBER", "BOTH"):
+        return f"{denied} Invalid_Role"
+
+    # Validate that the incident exists and is active
+    incident = incidents.get(incident_id)
+    if incident is None:
+        return f"{denied} Unknown_Incident"
+    if incident["status"] != "ACTIVE":
+        return f"{denied} Incident_Not_Active"
+
+    # Validate that the incident has an attachment and the requested file name matches the incident's attachment
+    file_name = message[3]
+    if incident["attachment"] == "NONE" or incident["attachment"] != file_name:
+        return f"{denied} Attachment_Not_Found"
+
+    # Validate that the publisher of the incident is registered and has the appropriate role to share the attachment 
+    publisher_name = incident["publisher"]
+    publisher = users.get(publisher_name)
+    if publisher is None or publisher["role"] not in ("PUBLISHER", "BOTH"):
+        return f"{denied} Publisher_Unavailable"
+
+    # If all validations pass, return the attachment information to the subscriber
+    return (
+        f"ATTACH_INFO {request_number} {incident_id} {publisher_name} "
+        f"{publisher['ip']} {publisher['tcp_port']} {file_name}"
+    )
+
 
 def distribute_alert(incident_id):
 
