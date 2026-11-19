@@ -62,7 +62,6 @@ def load_incidents():
         return saved_incidents
     return {}
 
-
 users = load_users()
 incidents = load_incidents()
 # Continue numbering after the incidents already saved, so a restarted server
@@ -144,6 +143,9 @@ def handle_message(message, address):
 
             case "CLOSE_ALERT":
                 response = close_alert(parts, address)
+
+            case "STATUS_REPORT":
+                response = status_report(parts, address) #for feature 2.8
 
             case _:
                 response = "Unknown_command"
@@ -665,6 +667,39 @@ def distribute_all_clear(incident_id):
                       request_number, "ALL_CLEAR", all_clear_message)
 
 
+#Section 2.8: User Safety/Response Status (UDP)(Feature 2.8)
+def status_report(message, address):
+    # STATUS_REPORT RQ# INCIDENT_ID Name Status
+    if len(message) !=5:
+        return "STATUS_REJECTED " + message[1] + " Invalid_Message_Format"
+
+    incident_id = message[2]
+    name = message[3]
+    status = message[4]
+
+    if name not in users:
+        return "STATUS_REJECTED " + message[1] + " Client_Not_Found"
+
+    if users[name]["ip"] != address[0] or users[name]["udp_port"] != address[1]:
+        return "STATUS_REJECTED " + message[1] + " Address_Mismatch"
+
+    if incident_id not in incidents:
+        return "STATUS_REJECTED " + message[1] + " Unknown_Incident"
+
+    if incidents[incident_id]["status"] == "CLOSED":
+        return "STATUS_REJECTED " + message[1] + " Incident_Closed"
+
+    if status not in ["SAFE", "NEED_HELP", "LEFT_AREA"]:
+        return "STATUS_REJECTED " + message[1] + " Invalid_Status"
+
+    incident = incidents[incident_id]
+    if "status_reports" not in incident:
+        incident["status_reports"] = {}
+    incident["status_reports"][name] = status
+    save_incidents()
+
+    print("Status report received from", name, "for", incident_id, ":", status)
+    return "STATUS_RECORDED " + message[1]
 # Keep server running
 while True:
     try:
