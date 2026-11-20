@@ -2,8 +2,11 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 import itertools
+import os
+import queue
+import random
 import socket
-from time import monotonic # To measure the reply deadline independently of changes to the system clock
+import threading
 from attachments import AttachmentServer, download_attachment, valid_file_name # For Feature 2.9: TCP listener, download function, filename check
 
 SERVER_IP = "127.0.0.1"
@@ -11,31 +14,115 @@ SERVER_PORT = 5000
 CLIENT_IP = "127.0.0.1"
 CLIENT_PORT = 7001
 
+# Feature 2.5: packet-loss simulation for testing. The fraction (0 to 1) of
+# ALERT_ACK messages this client "loses" instead of sending.
+ACK_LOSS = float(os.environ.get("CENRS_ACK_LOSS", "0"))
+
+# Messages the server sends on its own; every other message is a reply to a request
+NOTIFICATIONS = ("ALERT", "ALL_CLEAR")
+
+replies = queue.Queue() # Replies to our requests, filled by the receiver thread
+session = {"name": None} # Name used in ALERT_ACK (set on REGISTERED or with --name)
+seen_notifications = set() # (Incident_ID, Version) pairs already processed, for duplicate detection
+
+
 def request(client, command, number, arguments):
+    # Throw away late replies to earlier requests
+    while not replies.empty():
+        print("Late reply:", replies.get_nowait())
+
     message = " ".join([command, str(number), *arguments])
     client.sendto(message.encode("utf-8"), (SERVER_IP, SERVER_PORT))
-    deadline = monotonic() + 5 # 5 seconds timeout for the server to respond
-    while monotonic() < deadline:
-        client.settimeout(max(deadline - monotonic(), 0.001))
+    try:
+        reply = replies.get(timeout=5) # 5 seconds timeout for the server to respond
+    except queue.Empty:
+        print("Server did not respond.")
+        return []
+    print("Server:", reply)
+    return reply.split()
+
+
+# Feature 2.5: Reliable delivery of CRITICAL alerts / Feature 2.7: ALL_CLEAR
+def send_alert_ack(client, request_number, incident_id, version):
+    name = session["name"]
+    if name is None:
+        print("Cannot send ALERT_ACK: name unknown (REGISTER first, or start with --name)")
+        return
+
+    ack = f"ALERT_ACK {request_number} {incident_id} {version} {name}"
+    if random.random() < ACK_LOSS:
+        print("[sim] Dropped:", ack)
+        return
+    client.sendto(ack.encode("utf-8"), (SERVER_IP, SERVER_PORT))
+    print("Sent:", ack)
+
+
+def handle_notification(client, message):
+    fields = message.split()
+    kind = fields[0]
+
+    if kind == "ALERT" and len(fields) >= 10:
+        # ALERT RQ# Incident_ID Version Category Location Severity Title Description Attachment
+        needs_ack = fields[6] == "CRITICAL"
+    elif kind == "ALL_CLEAR" and len(fields) >= 5:
+        # ALL_CLEAR RQ# Incident_ID Version Message (always acknowledged)
+        needs_ack = True
+    else:
+        print("Ignoring malformed notification:", message)
+        return
+
+    request_number, incident_id, version = fields[1], fields[2], fields[3]
+    key = (incident_id, version)
+    duplicate = key in seen_notifications
+
+    # A duplicate is ACKed again: the server only retransmits because our ACK was lost
+    if needs_ack:
+        send_alert_ack(client, request_number, incident_id, version)
+
+    if duplicate:
+        print(f"Duplicate {kind} for {incident_id} version {version} ignored")
+        return
+    seen_notifications.add(key)
+
+    if kind == "ALERT":
+        print(f"\n*** {fields[6]} ALERT {incident_id} (version {version}) ***")
+        print(f"    {fields[4]} at {fields[5]}: {fields[7].replace('_', ' ')}")
+        print(f"    {fields[8].replace('_', ' ')}")
+        if fields[9] != "NONE":
+            print(f"    Attachment: {fields[9]} (download with: ATTACH_REQ {incident_id} {fields[9]})")
+    else:
+        print(f"\n*** ALL CLEAR {incident_id} (version {version}) ***")
+        print("    " + " ".join(fields[4:]).replace("_", " "))
+
+
+def receive_loop(client, stop):
+    # Runs in the background so alerts are received and acknowledged even while
+    # the user is typing or the main thread is waiting for a reply
+    while not stop.is_set():
         try:
             data, address = client.recvfrom(4096)
         except socket.timeout:
+            continue
+        except OSError:
             break
         if address != (SERVER_IP, SERVER_PORT):
             continue
-        reply = data.decode("utf-8")
-        print("Server:", reply)
-        fields = reply.split()
-        if fields and fields[0] != "ALERT":
-            return fields
-    print("Server did not respond.")
-    return []
+        message = data.decode("utf-8")
+        if message.split(" ", 1)[0] in NOTIFICATIONS:
+            print("\nServer:", message)
+            handle_notification(client, message)
+        else:
+            replies.put(message)
 
 # Set up the client and reads commands
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--udp-port", type=int, default=CLIENT_PORT)
+    # Feature 2.5: name for ALERT_ACK when this client was already registered in an earlier run
+    parser.add_argument("--name")
     args = parser.parse_args()
+    session["name"] = args.name
+    stop_receiver = threading.Event()
 
     publisher = None # Holds the active TCP listener for a PUBLISHER/BOTH client
     registered_name = None
@@ -51,6 +138,11 @@ def main():
             # Bind the socket to this client’s local address (IP and UDP port)
             # Each local client has a different UDP port to let the server distinguish between them and send replies to the correct socket
             client.bind((CLIENT_IP, args.udp_port))
+            # On Windows, don't let an unreachable server break recvfrom()
+            if hasattr(socket, "SIO_UDP_CONNRESET"):
+                client.ioctl(socket.SIO_UDP_CONNRESET, False)
+            client.settimeout(0.5) # Lets the receiver thread check regularly whether it should stop
+            threading.Thread(target=receive_loop, args=(client, stop_receiver), daemon=True).start()
             while True:
                 fields = input("Enter message (or exit): ").split()
                 if not fields:
@@ -114,13 +206,15 @@ def main():
                     # On 'REGISTERED', the client saves the accepted name and role
                     if command == "REGISTER" and len(arguments) == 5 and reply[:2] == ["REGISTERED", str(number)]:
                         registered_name, registered_role = arguments[:2]
+                        session["name"] = registered_name # Used in ALERT_ACK
                         rq_numbers = itertools.count(int(reply[-1]) + 1) # The message count at the end of the reg reply is used to set the next request number
                         if listener is not None:
                             listener.start() # Start TCP listener in a background thread
                             publisher, listener = listener, None # Move the TCP listener into 'publisher' once it's running
                     # On 'DEREGISTERED', the client clears the local reg and stops accepting new attachment connections
                     elif command == "DE-REGISTER" and reply[:2] == ["DEREGISTERED", str(number)]:
-                        registered_name = registered_role = None 
+                        registered_name = registered_role = None
+                        session["name"] = None
                         if publisher is not None:
                             publisher.stop()
                             publisher = None
@@ -137,8 +231,9 @@ def main():
     # Allow end-of-input or Ctrl+C to end the session
     except (EOFError, KeyboardInterrupt):
         pass
-    # Cleanup; stop the running publisher's TCP listener if it exists
+    # Cleanup; stop the receiver thread and the running publisher's TCP listener if it exists
     finally:
+        stop_receiver.set()
         if publisher is not None:
             publisher.stop()
 
