@@ -36,6 +36,28 @@
                 "JMSB",
                 "ALL"
             ]
-        ]
+        ],
+        "messages_sent": 8
+    },
+    "BEN": {
+        "role": "BOTH",
+        "ip": "127.0.0.1",
+        "udp_port": 7007,
+        "tcp_port": 7002,
+        "subscriptions": [
+            [
+                "HALL",
+                "ALL"
+            ],
+            [
+                "ALL",
+                "FIRE"
+            ],
+            [
+                "JMSB",
+                "WEATHER"
+            ]
+        ],
+        "messages_sent": 8
     }
 }

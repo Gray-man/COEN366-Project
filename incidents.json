@@ -42,5 +42,32 @@
         "attachment": "NONE",
         "version": 1,
         "status": "ACTIVE"
+    },
+    "INC005": {
+        "publisher": "BEN",
+        "category": "FIRE",
+        "location": "LOYOLA",
+        "severity": "CRITICAL",
+        "title": "FIRE",
+        "description": "BIG_FIRE",
+        "attachment": "NONE",
+        "version": 1,
+        "status": "ACTIVE",
+        "deliveries": {
+            "1": {
+                "ADAM": {
+                    "type": "ALERT",
+                    "rq": "1",
+                    "status": "UNCONFIRMED",
+                    "attempts": 3
+                },
+                "BEN": {
+                    "type": "ALERT",
+                    "rq": "2",
+                    "status": "CONFIRMED",
+                    "attempts": 1
+                }
+            }
+        }
     }
 }
