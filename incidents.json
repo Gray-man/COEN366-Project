@@ -42,5 +42,96 @@
         "attachment": "NONE",
         "version": 1,
         "status": "ACTIVE"
+    },
+    "INC005": {
+        "publisher": "Sec",
+        "category": "FIRE",
+        "location": "HALL",
+        "severity": "WARNING",
+        "title": "Fire",
+        "description": "Evacuate",
+        "attachment": "NONE",
+        "version": 1,
+        "status": "ACTIVE",
+        "deliveries": {
+            "1": {
+                "ADAM": {
+                    "type": "ALERT",
+                    "rq": "1",
+                    "status": "SENT",
+                    "attempts": 1
+                }
+            }
+        },
+        "status_reports": {
+            "Alice": "SAFE",
+            "Bob": "NEED_HELP"
+        }
+    },
+    "INC006": {
+        "publisher": "Sec",
+        "category": "WEATHER",
+        "location": "SGW",
+        "severity": "INFO",
+        "title": "Ice_Storm",
+        "description": "Stay_Home",
+        "attachment": "NONE",
+        "version": 1,
+        "status": "ACTIVE",
+        "deliveries": {
+            "1": {
+                "BENJAMIN": {
+                    "type": "ALERT",
+                    "rq": "2",
+                    "status": "SENT",
+                    "attempts": 1
+                }
+            }
+        }
+    },
+    "INC007": {
+        "publisher": "Sec",
+        "category": "POWER",
+        "location": "HALL",
+        "severity": "INFO",
+        "title": "Outage",
+        "description": "Lights_Out",
+        "attachment": "NONE",
+        "version": 2,
+        "status": "CLOSED",
+        "close_reason": "Fixed"
+    },
+    "INC008": {
+        "publisher": "Sec",
+        "category": "FIRE",
+        "location": "HALL",
+        "severity": "WARNING",
+        "title": "Smoke_Detected",
+        "description": "Leave_Building",
+        "attachment": "NONE",
+        "version": 1,
+        "status": "ACTIVE",
+        "deliveries": {
+            "1": {
+                "ADAM": {
+                    "type": "ALERT",
+                    "rq": "1",
+                    "status": "SENT",
+                    "attempts": 1
+                },
+                "Alice": {
+                    "type": "ALERT",
+                    "rq": "2",
+                    "status": "SENT",
+                    "attempts": 1
+                },
+                "Bob": {
+                    "type": "ALERT",
+                    "rq": "3",
+                    "status": "SENT",
+                    "attempts": 1
+                }
+            }
+        }
     }
 }
