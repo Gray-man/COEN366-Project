@@ -26,6 +26,30 @@ replies = queue.Queue() # Replies to our requests, filled by the receiver thread
 session = {"name": None} # Name used in ALERT_ACK (set on REGISTERED or with --name)
 seen_notifications = set() # (Incident_ID, Version) pairs already processed, for duplicate detection
 
+# Welcome menu: commands listed in the order of the project sections (type HELP to show it again)
+def print_menu(udp_port, name):
+    print(f"""
+-------------------------------------------------------------------------------
+WELCONE TO CENRS
+
+Please choose a command from the menu below. Type HELP to show this menu again.
+1. REGISTER Name Role IP UDP_Port TCP_Port
+2. DE-REGISTER Name                 
+3. SUBSCRIBE Location Category     
+4. UNSUBSCRIBE Location Category    
+5. PUBLISH_ALERT Category Location Severity Title Description Attachment
+6. UPDATE_ALERT Incident_ID Severity Title Description
+7. CLOSE_ALERT Incident_ID Reason   
+8. STATUS_REPORT Incident_ID Name Status (SAFE / NEED_HELP / LEFT_AREA)
+9. ATTACH_REQ Incident_ID File_Name 
+10. GET_ACTIVE_ALERTS [Name]  
+11. HELP      
+11. EXIT
+
+Locations:  HALL EV JMSB LOYOLA SGW ALL
+Categories: FIRE SECURITY WEATHER POWER BUILDING GENERAL ALL
+-------------------------------------------------------------------------------
+""")
 
 def request(client, command, number, arguments):
     # Throw away late replies to earlier requests
@@ -175,8 +199,9 @@ def main():
                 client.ioctl(socket.SIO_UDP_CONNRESET, False)
             client.settimeout(0.5) # Lets the receiver thread check regularly whether it should stop
             threading.Thread(target=receive_loop, args=(client, stop_receiver), daemon=True).start()
+            print_menu(args.udp_port, session["name"])
             while True:
-                fields = input("Enter message (or exit): ").split()
+                fields = input("Please enter a command from the menu (or HELP to show menu again): ").split()
                 if not fields:
                     continue
                 command, *arguments = fields # Separate the command from its arguments (1st word in 'command', the rest in 'arguments')
@@ -184,12 +209,22 @@ def main():
                 if command == "EXIT":
                     break
 
+                if command == "HELP":
+                    print_menu(args.udp_port, session["name"])
+                    continue
+
                 # For 2.10: GET_ACTIVE_ALERTS goes over TCP, not UDP
                 if command == "GET_ACTIVE_ALERTS":
                     name = arguments[0] if arguments else session["name"]
                     if name is None:
-                        print("Usage: GET_ACTIVE_ALERTS Name (or REGISTER first)")
+                        print("Usage: GET_ACTIVE_ALERTS Name")
                         continue
+
+                    # A client may only sync its own alerts
+                    if session["name"] is not None and name != session["name"]:
+                        print("You can only request your own alerts (you are " + session["name"] + ")")
+                        continue
+
                     get_active_alerts(next(rq_numbers), name)
                     continue
 
