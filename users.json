@@ -36,6 +36,49 @@
                 "JMSB",
                 "ALL"
             ]
-        ]
+        ],
+        "messages_sent": 5
+    },
+    "Sec": {
+        "role": "PUBLISHER",
+        "ip": "127.0.0.1",
+        "udp_port": 5100,
+        "tcp_port": 6100,
+        "subscriptions": [],
+        "messages_sent": 9
+    },
+    "Alice": {
+        "role": "SUBSCRIBER",
+        "ip": "127.0.0.1",
+        "udp_port": 5011,
+        "tcp_port": 6011,
+        "subscriptions": [
+            [
+                "HALL",
+                "ALL"
+            ],
+            [
+                "SGW",
+                "WEATHER"
+            ],
+            [
+                "HALL",
+                "FIRE"
+            ]
+        ],
+        "messages_sent": 8
+    },
+    "Bob": {
+        "role": "SUBSCRIBER",
+        "ip": "127.0.0.1",
+        "udp_port": 5012,
+        "tcp_port": 6012,
+        "subscriptions": [
+            [
+                "HALL",
+                "FIRE"
+            ]
+        ],
+        "messages_sent": 6
     }
 }

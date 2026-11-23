@@ -11,6 +11,7 @@ from attachments import AttachmentServer, download_attachment, valid_file_name #
 
 SERVER_IP = "127.0.0.1"
 SERVER_PORT = 5000
+SERVER_TCP_PORT = 6000
 CLIENT_IP = "127.0.0.1"
 CLIENT_PORT = 7001
 
@@ -25,6 +26,30 @@ replies = queue.Queue() # Replies to our requests, filled by the receiver thread
 session = {"name": None} # Name used in ALERT_ACK (set on REGISTERED or with --name)
 seen_notifications = set() # (Incident_ID, Version) pairs already processed, for duplicate detection
 
+# Welcome menu: commands listed in the order of the project sections (type HELP to show it again)
+def print_menu(udp_port, name):
+    print(f"""
+-------------------------------------------------------------------------------
+WELCONE TO CENRS
+
+Please choose a command from the menu below. Type HELP to show this menu again.
+1. REGISTER Name Role IP UDP_Port TCP_Port
+2. DE-REGISTER Name                 
+3. SUBSCRIBE Location Category     
+4. UNSUBSCRIBE Location Category    
+5. PUBLISH_ALERT Category Location Severity Title Description Attachment
+6. UPDATE_ALERT Incident_ID Severity Title Description
+7. CLOSE_ALERT Incident_ID Reason   
+8. STATUS_REPORT Incident_ID Name Status (SAFE / NEED_HELP / LEFT_AREA)
+9. ATTACH_REQ Incident_ID File_Name 
+10. GET_ACTIVE_ALERTS [Name]  
+11. HELP      
+11. EXIT
+
+Locations:  HALL EV JMSB LOYOLA SGW ALL
+Categories: FIRE SECURITY WEATHER POWER BUILDING GENERAL ALL
+-------------------------------------------------------------------------------
+""")
 
 def request(client, command, number, arguments):
     # Throw away late replies to earlier requests
@@ -114,6 +139,37 @@ def receive_loop(client, stop):
         else:
             replies.put(message)
 
+# For 2.10: get the current active incidents from the server over TCP
+def get_active_alerts(number, name):
+    try:
+        with socket.create_connection((SERVER_IP, SERVER_TCP_PORT), timeout=5) as connection:
+            request_line = f"GET_ACTIVE_ALERTS {number} {name}"
+            connection.sendall((request_line + "\n").encode("utf-8"))
+            print("TCP sent:", request_line)
+
+            with connection.makefile("r", encoding="utf-8") as incoming:
+                header = incoming.readline().split()
+                print("TCP received:", " ".join(header))
+
+                # ACTIVE_ALERTS RQ# Number_Alerts
+                if len(header) != 3 or header[0] != "ACTIVE_ALERTS" or not header[2].isdigit():
+                    return
+
+                # Read exactly Number_Alerts record lines
+                for _ in range(int(header[2])):
+                    record = incoming.readline().split()
+                    if len(record) != 9:
+                        print("Malformed record:", " ".join(record))
+                        continue
+                    incident_id, version, category, location, severity, status, title, description, attachment = record
+                    print(f"  {incident_id} v{version} {severity} {category} at {location} [{status}]: "
+                          f"{title.replace('_', ' ')} - {description.replace('_', ' ')} (attachment: {attachment})")
+                    # Remember it, so a late UDP copy of the same version is not shown again
+                    seen_notifications.add((incident_id, version))
+    except OSError as error:
+        print("GET_ACTIVE_ALERTS failed:", error)
+
+
 # Set up the client and reads commands
 def main():
     parser = argparse.ArgumentParser()
@@ -143,14 +199,34 @@ def main():
                 client.ioctl(socket.SIO_UDP_CONNRESET, False)
             client.settimeout(0.5) # Lets the receiver thread check regularly whether it should stop
             threading.Thread(target=receive_loop, args=(client, stop_receiver), daemon=True).start()
+            print_menu(args.udp_port, session["name"])
             while True:
-                fields = input("Enter message (or exit): ").split()
+                fields = input("Please enter a command from the menu (or HELP to show menu again): ").split()
                 if not fields:
                     continue
                 command, *arguments = fields # Separate the command from its arguments (1st word in 'command', the rest in 'arguments')
                 command = command.upper()
                 if command == "EXIT":
                     break
+
+                if command == "HELP":
+                    print_menu(args.udp_port, session["name"])
+                    continue
+
+                # For 2.10: GET_ACTIVE_ALERTS goes over TCP, not UDP
+                if command == "GET_ACTIVE_ALERTS":
+                    name = arguments[0] if arguments else session["name"]
+                    if name is None:
+                        print("Usage: GET_ACTIVE_ALERTS Name")
+                        continue
+
+                    # A client may only sync its own alerts
+                    if session["name"] is not None and name != session["name"]:
+                        print("You can only request your own alerts (you are " + session["name"] + ")")
+                        continue
+
+                    get_active_alerts(next(rq_numbers), name)
+                    continue
 
                 # Prepare a TCP listener for the PUBLISHER/BOTH client if registering with a valid TCP port
                 listener = None # Holds the TCP listener that's being prepared; is closed if denied registration or exits before registration is completed
