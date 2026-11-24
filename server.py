@@ -21,47 +21,79 @@ categories = ["FIRE", "SECURITY", "WEATHER", "POWER", "BUILDING", "GENERAL", "AL
 locations = ["HALL", "EV", "JMSB", "LOYOLA", "SGW", "ALL"]
 
 
-def save_users():
-    with open("users.json", "w") as file:
-        json.dump(users, file, indent=4)
+# ---------------------------------------------------------------------------
+# Section 4 - Persistence and crash recovery
+# ---------------------------------------------------------------------------
+# All server state lives in two JSON files that are rewritten after every change:
+#   users.json     - user profiles (role, IP, ports) and subscriptions
+#   incidents.json - incidents (version, status, attachment name + publisher),
+#                    status reports and per-version delivery/ACK records
+# Nothing else needs saving: the next Incident_ID and server RQ# are derived
+# from these files when the server starts.
+
+USERS_FILE = "users.json"
+INCIDENTS_FILE = "incidents.json"
 
 
-
-def load_users():
-    if os.path.exists("users.json"):
-        with open("users.json", "r") as file:
-            saved_users = json.load(file)
-
-        for name in saved_users:
-            saved_users[name]["subscriptions"] = [
-                tuple(subscription)
-                for subscription in saved_users[name]["subscriptions"]
-            ]
-
-        return saved_users
-
-    return {}
-
-def save_incidents():
+def save_json(path, data):
     # Write to a temporary file and then rename it, so a crash in the middle of
-    # a save can never leave a half-written incidents.json behind.
-    with open("incidents.json.tmp", "w") as file:
-        json.dump(incidents, file, indent=4)
+    # a save can never leave a half-written file behind: after a crash the file
+    # holds either the old state or the new state, never a mix.
+    temp_path = path + ".tmp"
+    with open(temp_path, "w") as file:
+        json.dump(data, file, indent=4)
+        file.flush()
+        os.fsync(file.fileno())  # make sure the bytes are on disk before the rename
     for _ in range(5):
         try:
-            os.replace("incidents.json.tmp", "incidents.json")
+            os.replace(temp_path, path)
             return
         except PermissionError:
             # Windows refuses the rename while another program has the file open.
             time.sleep(0.05)
-    print("Error: could not save incidents.json")
+    print("Error: could not save", path)
+
+
+def load_json(path):
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r") as file:
+            data = json.load(file)
+        if not isinstance(data, dict):
+            raise ValueError("top level is not a JSON object")
+        return data
+    except (OSError, ValueError) as error:  # json.JSONDecodeError is a ValueError
+        # Keep the damaged file for inspection instead of crashing or overwriting it.
+        backup = path + ".corrupt"
+        print("Warning: could not read", path, "(" + str(error) + "), moved it to", backup)
+        try:
+            os.replace(path, backup)
+        except OSError:
+            pass
+        return {}
+
+
+def save_users():
+    save_json(USERS_FILE, users)
+
+
+def load_users():
+    saved_users = load_json(USERS_FILE)
+    for user in saved_users.values():
+        # JSON has no tuples, subscriptions come back as lists
+        user["subscriptions"] = [tuple(subscription) for subscription in user.get("subscriptions", [])]
+        user.setdefault("messages_sent", 0)  # older records were saved without it
+    return saved_users
+
+
+def save_incidents():
+    save_json(INCIDENTS_FILE, incidents)
+
 
 def load_incidents():
-    if os.path.exists("incidents.json"):
-        with open("incidents.json", "r") as file:
-            saved_incidents = json.load(file)
-        return saved_incidents
-    return {}
+    return load_json(INCIDENTS_FILE)
+
 
 users = load_users()
 incidents = load_incidents()
@@ -71,7 +103,17 @@ incident_counter = max(
     [int(incident_id[3:]) for incident_id in incidents if incident_id[3:].isdigit()],
     default=0
 )
-request_counter = 0
+# Same for the RQ# of server-generated notifications: every one of them is saved
+# in a delivery record, so continue after the largest one. This keeps a late
+# ALERT_ACK from before the crash from matching a new message.
+request_counter = max(
+    [int(delivery["rq"])
+     for incident in incidents.values()
+     for version_deliveries in incident.get("deliveries", {}).values()
+     for delivery in version_deliveries.values()
+     if str(delivery.get("rq", "")).isdigit()],
+    default=0
+)
 
 # The main receive loop and the retransmission timers run in different threads,
 # so every access to users / incidents / pending_acks happens under this lock.
@@ -319,7 +361,7 @@ def publish_alert(message, address):
     global incidents
 
     if len(message)!=8:
-        return "ALERT-DENIED " + message[1] + " Invalid_Message_Format"
+        return "ALERT_DENIED " + message[1] + " Invalid_Message_Format"
 
     userName = None
 
@@ -329,21 +371,21 @@ def publish_alert(message, address):
             break
 
     if userName is None:
-        return "ALERT-DENIED " + message[1] + " Client_Not_Found"
+        return "ALERT_DENIED " + message[1] + " Client_Not_Found"
 
     if users[userName]["role"] not in ["PUBLISHER", "BOTH"]:
-        return "ALERT-DENIED " + message[1] + " Invalid_Role"
+        return "ALERT_DENIED " + message[1] + " Invalid_Role"
 
     category = message[2]
     location = message[3]
     severity = message[4]
 
     if category not in categories:
-        return "ALERT-DENIED " + message[1] + " Invalid_Category"
+        return "ALERT_DENIED " + message[1] + " Invalid_Category"
     if location not in locations:
-        return "ALERT-DENIED " + message[1] + " Invalid_Location"
+        return "ALERT_DENIED " + message[1] + " Invalid_Location"
     if severity not in ["INFO", "WARNING", "CRITICAL"]:
-        return "ALERT-DENIED " + message[1] + " Invalid_Severity"
+        return "ALERT_DENIED " + message[1] + " Invalid_Severity"
 
     incident_id = generate_incident_id()
     incidents[incident_id] = {
@@ -553,16 +595,22 @@ def distribute_alert(incident_id):
 # Section 2.5 - Reliable delivery of CRITICAL alerts (and ALL_CLEAR)
 # ---------------------------------------------------------------------------
 
-def record_delivery(incident_id, version, name, request_number, message_type, status, attempts):
+def record_delivery(incident_id, version, name, request_number, message_type, status, attempts,
+                    message=None):
     # Delivery status is saved per incident and version so it survives a restart:
     # incidents[id]["deliveries"]["<version>"]["<name>"] = {...}
-    deliveries = incidents[incident_id].setdefault("deliveries", {})
-    deliveries.setdefault(str(version), {})[name] = {
+    record = {
         "type": message_type,
         "rq": request_number,
         "status": status,       # SENT, PENDING, CONFIRMED, UNCONFIRMED or SUPERSEDED
         "attempts": attempts
     }
+    if message is not None:
+        # Messages that need an ACK keep their exact text, so a restarted server
+        # can retransmit the same message (same RQ#) - see resume_pending_deliveries.
+        record["message"] = message
+    deliveries = incidents[incident_id].setdefault("deliveries", {})
+    deliveries.setdefault(str(version), {})[name] = record
     save_incidents()
 
 
@@ -578,7 +626,9 @@ def send_reliable(name, incident_id, version, request_number, message_type, mess
         # A newer version replaces an older one that is still being retransmitted.
         for key in list(pending_acks):
             if key[0] == name and key[1] == incident_id and key[2] < version:
-                pending_acks.pop(key)["timer"].cancel()
+                timer = pending_acks.pop(key)["timer"]
+                if timer is not None:
+                    timer.cancel()
                 old = get_delivery(incident_id, key[2], name)
                 if old is not None:
                     old["status"] = "SUPERSEDED"
@@ -593,7 +643,7 @@ def send_reliable(name, incident_id, version, request_number, message_type, mess
             "attempts": 0,
             "timer": None
         }
-        record_delivery(incident_id, version, name, request_number, message_type, "PENDING", 0)
+        record_delivery(incident_id, version, name, request_number, message_type, "PENDING", 0, message)
         transmit(name, incident_id, version)
 
 
@@ -876,6 +926,78 @@ def tcp_listener():
         connection, address = tcp_server.accept()
         threading.Thread(target=handle_tcp_client, args=(connection, address), daemon=True).start()
 
+
+# ---------------------------------------------------------------------------
+# Section 4 - Crash recovery at startup
+# ---------------------------------------------------------------------------
+
+def resume_pending_deliveries():
+    # Timers do not survive a crash, so a delivery that was still waiting for an
+    # ALERT_ACK is left as PENDING in incidents.json. Each one is finished here:
+    #   - older version than the incident's current one -> SUPERSEDED
+    #   - recipient de-registered, all attempts used, or
+    #     no saved message text                        -> UNCONFIRMED
+    #   - otherwise -> retransmitted with the same RQ# and the attempts that are
+    #     left. The client sees a duplicate (Incident_ID, Version), ACKs it again
+    #     and does not show it twice.
+    resumed = 0
+    for incident_id, incident in incidents.items():
+        for version_text, version_deliveries in incident.get("deliveries", {}).items():
+            for name, delivery in version_deliveries.items():
+                if delivery.get("status") != "PENDING":
+                    continue
+                version = int(version_text)
+
+                if version < incident["version"]:
+                    delivery["status"] = "SUPERSEDED"
+                elif (name not in users or "message" not in delivery
+                      or delivery.get("attempts", 0) >= MAX_ATTEMPTS):
+                    delivery["status"] = "UNCONFIRMED"
+                else:
+                    pending_acks[(name, incident_id, version)] = {
+                        "rq": delivery["rq"],
+                        "message": delivery["message"],
+                        "address": (users[name]["ip"], users[name]["udp_port"]),
+                        "attempts": delivery.get("attempts", 0),
+                        "timer": None
+                    }
+                    resumed += 1
+                    continue
+                print("Recovery:", delivery["type"], incident_id, "version", version, "to", name,
+                      "->", delivery["status"])
+    save_incidents()
+
+    for name, incident_id, version in list(pending_acks):
+        print("Recovery: resuming", get_delivery(incident_id, version, name)["type"], incident_id,
+              "version", version, "to", name)
+        transmit(name, incident_id, version)
+    return resumed
+
+
+def print_recovery_summary():
+    active = sum(1 for incident in incidents.values() if incident["status"] == "ACTIVE")
+    with_attachment = sum(1 for incident in incidents.values() if incident.get("attachment", "NONE") != "NONE")
+    reports = sum(len(incident.get("status_reports", {})) for incident in incidents.values())
+    delivery_counts = {}
+    for incident in incidents.values():
+        for version_deliveries in incident.get("deliveries", {}).values():
+            for delivery in version_deliveries.values():
+                delivery_counts[delivery["status"]] = delivery_counts.get(delivery["status"], 0) + 1
+
+    print("Recovered from disk:")
+    print("  users:", len(users), "(" + str(sum(len(u["subscriptions"]) for u in users.values())),
+          "subscriptions)")
+    print("  incidents:", len(incidents), "(" + str(active), "active,", len(incidents) - active, "closed,",
+          with_attachment, "with attachment)")
+    print("  status reports:", reports)
+    print("  delivery records:", delivery_counts if delivery_counts else "none")
+    print("  next Incident_ID: INC" + str(incident_counter + 1).zfill(3),
+          "| next server RQ#:", request_counter + 1)
+
+
+with state_lock:
+    print_recovery_summary()
+    resume_pending_deliveries()
 
 # Start the TCP listener in the background (Section 2.10)
 threading.Thread(target=tcp_listener, daemon=True).start()

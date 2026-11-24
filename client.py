@@ -2,6 +2,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 import itertools
+import json
 import os
 import queue
 import random
@@ -20,7 +21,7 @@ CLIENT_PORT = 7007
 ACK_LOSS = float(os.environ.get("CENRS_ACK_LOSS", "0"))
 
 # Messages the server sends on its own; every other message is a reply to a request
-NOTIFICATIONS = ("ALERT", "ALL_CLEAR")
+NOTIFICATIONS = ("ALERT", "ALERT_UPDATE", "ALL_CLEAR")
 
 replies = queue.Queue() # Replies to our requests, filled by the receiver thread
 session = {"name": None} # Name used in ALERT_ACK (set on REGISTERED or with --name)
@@ -89,6 +90,10 @@ def handle_notification(client, message):
     if kind == "ALERT" and len(fields) >= 10:
         # ALERT RQ# Incident_ID Version Category Location Severity Title Description Attachment
         needs_ack = fields[6] == "CRITICAL"
+    elif kind == "ALERT_UPDATE" and len(fields) >= 7:
+        # Feature 2.6: ALERT_UPDATE RQ# Incident_ID Version Severity Title Description
+        # A CRITICAL update is acknowledged like a CRITICAL alert
+        needs_ack = fields[4] == "CRITICAL"
     elif kind == "ALL_CLEAR" and len(fields) >= 5:
         # ALL_CLEAR RQ# Incident_ID Version Message (always acknowledged)
         needs_ack = True
@@ -115,6 +120,10 @@ def handle_notification(client, message):
         print(f"    {fields[8].replace('_', ' ')}")
         if fields[9] != "NONE":
             print(f"    Attachment: {fields[9]} (download with: ATTACH_REQ {incident_id} {fields[9]})")
+    elif kind == "ALERT_UPDATE":
+        print(f"\n*** {fields[4]} UPDATE {incident_id} (version {version}) ***")
+        print(f"    {fields[5].replace('_', ' ')}")
+        print(f"    {fields[6].replace('_', ' ')}")
     else:
         print(f"\n*** ALL CLEAR {incident_id} (version {version}) ***")
         print("    " + " ".join(fields[4:]).replace("_", " "))
@@ -170,6 +179,52 @@ def get_active_alerts(number, name):
         print("GET_ACTIVE_ALERTS failed:", error)
 
 
+# Section 4: a PUBLISHER/BOTH client keeps its role, TCP endpoint and the
+# Incident_ID -> attachment file list in client_<Name>.json. When it is started
+# again with --name, it restarts its TCP listener and serves the same files,
+# so subscribers can still download attachments of incidents that are active.
+def client_state_file(name):
+    return f"client_{name}.json"
+
+
+def save_client_state(name, role, publisher):
+    if publisher is None or not valid_file_name(client_state_file(name)):
+        return
+    with publisher.attachments_lock:
+        attachments = dict(publisher.attachments)
+    state = {
+        "role": role,
+        "ip": publisher.server_address[0],
+        "tcp_port": publisher.server_address[1],
+        "attachments": attachments
+    }
+    try:
+        # Temporary file + rename, so a crash never leaves a half-written file
+        with open(client_state_file(name) + ".tmp", "w") as file:
+            json.dump(state, file, indent=4)
+        os.replace(client_state_file(name) + ".tmp", client_state_file(name))
+    except OSError as error:
+        print("Could not save", client_state_file(name) + ":", error)
+
+
+def load_client_state(name):
+    if not valid_file_name(client_state_file(name)):
+        return None
+    try:
+        with open(client_state_file(name)) as file:
+            state = json.load(file)
+        return state if isinstance(state, dict) else None
+    except (OSError, ValueError):
+        return None  # no saved state (never was a publisher here) or unreadable file
+
+
+def delete_client_state(name):
+    try:
+        os.remove(client_state_file(name))
+    except OSError:
+        pass
+
+
 # Set up the client and reads commands
 def main():
     parser = argparse.ArgumentParser()
@@ -200,6 +255,28 @@ def main():
             client.settimeout(0.5) # Lets the receiver thread check regularly whether it should stop
             threading.Thread(target=receive_loop, args=(client, stop_receiver), daemon=True).start()
             print_menu(args.udp_port, session["name"])
+
+            # Section 4: a client restarted with --name is still registered on the
+            # (persistent) server, so it resumes by syncing the active incidents it
+            # may have missed while it was down. If the server is down, the user
+            # can run GET_ACTIVE_ALERTS again later.
+            if session["name"] is not None:
+                # A publisher also restarts its attachment listener with the saved files
+                state = load_client_state(session["name"])
+                if state is not None and state.get("role") in ("PUBLISHER", "BOTH"):
+                    try:
+                        publisher = AttachmentServer((state["ip"], int(state["tcp_port"])))
+                    except (OSError, KeyError, TypeError, ValueError) as error:
+                        print("Cannot restart attachment listener:", error)
+                    else:
+                        publisher.attachments.update(state.get("attachments", {}))
+                        publisher.start()
+                        registered_name, registered_role = session["name"], state["role"]
+                        print("Restored", len(publisher.attachments), "attachment(s) for", session["name"])
+
+                print("Resuming as", session["name"] + ": syncing active alerts with the server...")
+                get_active_alerts(next(rq_numbers), session["name"])
+
             while True:
                 fields = input("Please enter a command from the menu (or HELP to show menu again): ").split()
                 if not fields:
@@ -278,6 +355,10 @@ def main():
                         ):
                             publisher.attachments[reply[2]] = arguments[-1]
 
+                    # Section 4: remember the new incident's attachment on disk (after releasing the lock)
+                    if publisher and command == "PUBLISH_ALERT" and len(reply) == 3 and reply[0] == "ALERT_ACCEPTED":
+                        save_client_state(session["name"], registered_role, publisher)
+
                     # Handle the server's reply to the command and manage the TCP listener for a PUBLISHER/BOTH client:
                     # On 'REGISTERED', the client saves the accepted name and role
                     if command == "REGISTER" and len(arguments) == 5 and reply[:2] == ["REGISTERED", str(number)]:
@@ -287,8 +368,18 @@ def main():
                         if listener is not None:
                             listener.start() # Start TCP listener in a background thread
                             publisher, listener = listener, None # Move the TCP listener into 'publisher' once it's running
+                        if publisher is not None:
+                            # Section 4: re-registering after a restart brings back the files published earlier
+                            state = load_client_state(registered_name)
+                            if state is not None:
+                                with publisher.attachments_lock:
+                                    for incident_id, file_name in state.get("attachments", {}).items():
+                                        publisher.attachments.setdefault(incident_id, file_name)
+                            save_client_state(registered_name, registered_role, publisher)
                     # On 'DEREGISTERED', the client clears the local reg and stops accepting new attachment connections
                     elif command == "DE-REGISTER" and reply[:2] == ["DEREGISTERED", str(number)]:
+                        if registered_name is not None:
+                            delete_client_state(registered_name) # Not registered any more, nothing to resume
                         registered_name = registered_role = None
                         session["name"] = None
                         if publisher is not None:
@@ -296,10 +387,11 @@ def main():
                             publisher = None
                     # For a subscriber's ATTACH_REQ, the server's ATTACH_INFO reply contains the publisher's TCP endpoint and the attachment filename;
                     # the client starts a download in a background thread
-                    elif command == "ATTACH_REQ" and len(arguments) == 2 and registered_name:
+                    # session["name"] is also set by --name, so a restarted subscriber can still download
+                    elif command == "ATTACH_REQ" and len(arguments) == 2 and session["name"]:
                         if len(reply) == 7 and reply[:3] == ["ATTACH_INFO", str(number), arguments[0]] and reply[-1] == arguments[1]:
                             endpoint = (reply[4], int(reply[5]))
-                            downloads.submit(download_attachment, endpoint, next(rq_numbers), registered_name, *arguments)
+                            downloads.submit(download_attachment, endpoint, next(rq_numbers), session["name"], *arguments)
                 # Cleanup; close a prepared listener that never becomes the running publisher
                 finally:
                     if listener is not None:
