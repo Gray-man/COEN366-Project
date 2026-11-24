@@ -13,7 +13,7 @@ SERVER_IP = "127.0.0.1"
 SERVER_PORT = 5000
 SERVER_TCP_PORT = 6000
 CLIENT_IP = "127.0.0.1"
-CLIENT_PORT = 7001
+CLIENT_PORT = 7007
 
 # Feature 2.5: packet-loss simulation for testing. The fraction (0 to 1) of
 # ALERT_ACK messages this client "loses" instead of sending.

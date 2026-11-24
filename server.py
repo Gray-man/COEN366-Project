@@ -145,6 +145,8 @@ def handle_message(message, address):
             case "CLOSE_ALERT":
                 response = close_alert(parts, address)
 
+            case "UPDATE_ALERT":
+                response = update_incident(parts, address)
             case "STATUS_REPORT":
                 response = status_report(parts, address) #for feature 2.8
 
@@ -360,6 +362,97 @@ def publish_alert(message, address):
     distribute_alert(incident_id)
 
     return "ALERT_ACCEPTED " + message[1] + " " + incident_id
+
+def update_incident(message, address):
+    # UPDATE_ALERT RQ# Incident_ID Severity Title Description
+    if len(message) != 6:
+        return "UPDATE_ALERT-DENIED " + message[1] + " Invalid_Message_Format"
+
+    user_name = None
+    for name, user in users.items():
+        if (user["ip"], user["udp_port"]) == address:
+            user_name = name
+            break
+
+    if user_name is None:
+        return "UPDATE_ALERT-DENIED " + message[1] + " Client_Not_Found"
+
+    incident_id = message[2]
+    incident = incidents.get(incident_id)
+
+    if incident is None:
+        return "UPDATE_ALERT-DENIED " + message[1] + " Invalid_Incident_ID"
+
+    if incident["publisher"] != user_name:
+        return "UPDATE_ALERT-DENIED " + message[1] + " Not_Incident_Publisher"
+
+    if incident["status"] != "ACTIVE":
+        return "UPDATE_ALERT-DENIED " + message[1] + " Incident_Not_Active"
+
+    severity = message[3]
+    if severity not in ["INFO", "WARNING", "CRITICAL"]:
+        return "UPDATE_ALERT-DENIED " + message[1] + " Invalid_Severity"
+
+    incident["severity"] = severity
+    incident["title"] = message[4]
+    incident["description"] = message[5]
+    incident["version"] += 1
+    save_incidents()
+
+    distribute_updates(incident_id)
+
+    return "ALERT_UPDATED " + message[1] + " " + incident_id + " " + str(incident["version"])
+
+def distribute_updates(incident_id):
+    incident = incidents[incident_id]
+
+    for name, user in users.items():
+        if user["role"] not in ["SUBSCRIBER", "BOTH"]:
+            continue
+
+        if not matches_subscription(
+            user["subscriptions"],
+            incident["location"],
+            incident["category"]
+        ):
+            continue
+
+        request_number = generate_request_id()
+        update_message = (
+            "ALERT_UPDATE " +
+            request_number + " " +
+            incident_id + " " +
+            str(incident["version"]) + " " +
+            incident["severity"] + " " +
+            incident["title"] + " " +
+            incident["description"]
+        )
+
+        client_address = (user["ip"], user["udp_port"])
+
+        if incident["severity"] == "CRITICAL":
+            send_reliable(
+                name,
+                incident_id,
+                incident["version"],
+                request_number,
+                "ALERT_UPDATE",
+                update_message
+            )
+        else:
+            server.sendto(update_message.encode("utf-8"), client_address)
+            record_delivery(
+                incident_id,
+                incident["version"],
+                name,
+                request_number,
+                "ALERT_UPDATE",
+                "SENT",
+                1
+            )
+
+        print("Sending update to:", name)
+        print("Message:", update_message)
 
 # Feature 2.9 (Part A): Peer-to-Peer Incident Attachments
 def get_attachment_source(message, address):
