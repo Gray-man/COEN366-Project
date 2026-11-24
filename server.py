@@ -361,7 +361,7 @@ def publish_alert(message, address):
     global incidents
 
     if len(message)!=8:
-        return "ALERT-DENIED " + message[1] + " Invalid_Message_Format"
+        return "ALERT_DENIED " + message[1] + " Invalid_Message_Format"
 
     userName = None
 
@@ -371,21 +371,21 @@ def publish_alert(message, address):
             break
 
     if userName is None:
-        return "ALERT-DENIED " + message[1] + " Client_Not_Found"
+        return "ALERT_DENIED " + message[1] + " Client_Not_Found"
 
     if users[userName]["role"] not in ["PUBLISHER", "BOTH"]:
-        return "ALERT-DENIED " + message[1] + " Invalid_Role"
+        return "ALERT_DENIED " + message[1] + " Invalid_Role"
 
     category = message[2]
     location = message[3]
     severity = message[4]
 
     if category not in categories:
-        return "ALERT-DENIED " + message[1] + " Invalid_Category"
+        return "ALERT_DENIED " + message[1] + " Invalid_Category"
     if location not in locations:
-        return "ALERT-DENIED " + message[1] + " Invalid_Location"
+        return "ALERT_DENIED " + message[1] + " Invalid_Location"
     if severity not in ["INFO", "WARNING", "CRITICAL"]:
-        return "ALERT-DENIED " + message[1] + " Invalid_Severity"
+        return "ALERT_DENIED " + message[1] + " Invalid_Severity"
 
     incident_id = generate_incident_id()
     incidents[incident_id] = {
