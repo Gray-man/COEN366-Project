@@ -9,6 +9,7 @@ import time
 # Server configuration
 SERVER_IP = "127.0.0.1"
 SERVER_PORT = 5000
+SERVER_TCP_PORT = 6000
 
 # Reliable delivery (section 2.5): seconds to wait for an ALERT_ACK before
 # retransmitting, and the total number of transmissions per message.
@@ -61,7 +62,6 @@ def load_incidents():
             saved_incidents = json.load(file)
         return saved_incidents
     return {}
-
 
 users = load_users()
 incidents = load_incidents()
@@ -147,6 +147,8 @@ def handle_message(message, address):
 
             case "UPDATE_ALERT":
                 response = update_incident(parts, address)
+            case "STATUS_REPORT":
+                response = status_report(parts, address) #for feature 2.8
 
             case _:
                 response = "Unknown_command"
@@ -758,6 +760,125 @@ def distribute_all_clear(incident_id):
         send_reliable(name, incident_id, incident["version"],
                       request_number, "ALL_CLEAR", all_clear_message)
 
+
+#Section 2.8: User Safety/Response Status (UDP)(Feature 2.8)
+def status_report(message, address):
+    # STATUS_REPORT RQ# INCIDENT_ID Name Status
+    if len(message) !=5:
+        return "STATUS_REJECTED " + message[1] + " Invalid_Message_Format"
+
+    incident_id = message[2]
+    name = message[3]
+    status = message[4]
+
+    if name not in users:
+        return "STATUS_REJECTED " + message[1] + " Client_Not_Found"
+
+    if users[name]["ip"] != address[0] or users[name]["udp_port"] != address[1]:
+        return "STATUS_REJECTED " + message[1] + " Address_Mismatch"
+
+    if incident_id not in incidents:
+        return "STATUS_REJECTED " + message[1] + " Unknown_Incident"
+
+    if incidents[incident_id]["status"] == "CLOSED":
+        return "STATUS_REJECTED " + message[1] + " Incident_Closed"
+
+    if status not in ["SAFE", "NEED_HELP", "LEFT_AREA"]:
+        return "STATUS_REJECTED " + message[1] + " Invalid_Status"
+
+    incident = incidents[incident_id]
+    if "status_reports" not in incident:
+        incident["status_reports"] = {}
+    incident["status_reports"][name] = status
+    save_incidents()
+
+    print("Status report received from", name, "for", incident_id, ":", status)
+    return "STATUS_RECORDED " + message[1]
+
+#Section 2.10: Recovering current emergency information (TCP)
+
+def get_active_alerts(message,address):
+    #Get_ACTIVE_ALERTS RQ # Name
+    if len(message) != 3 or message[0] != "GET_ACTIVE_ALERTS" or not message[1].isdigit():
+        request_number = message[1] if len(message) > 1 else "0"
+        return "ACTIVE_ALERTS_DENIED " + request_number + " Invalid_Message_Format"
+
+    request_number = message[1]
+    name = message[2]
+
+    if name not in users:
+        return "ACTIVE_ALERTS_DENIED " + request_number + " Client_Not_Found"
+
+    if users[name]["ip"] != address[0]:
+        return "ACTIVE_ALERTS_DENIED " + request_number + " Address_Mismatch"
+
+    # Keep only ACTIVE incidents that match this client's subscriptions
+    records = []
+    for incident_id, incident in incidents.items():
+        if incident["status"] != "ACTIVE":
+            continue
+        if not matches_subscription(users[name]["subscriptions"], incident["location"], incident["category"]):
+            continue
+
+        # One record per line: ID Version Category Location Severity Status Title Description Attachment
+        record = (
+            incident_id + " " +
+            str(incident["version"]) + " " +
+            incident["category"] + " " +
+            incident["location"] + " " +
+            incident["severity"] + " " +
+            incident["status"] + " " +
+            incident["title"] + " " +
+            incident["description"] + " " +
+            incident["attachment"]
+        )
+        records.append(record)
+
+    # Header line with the number of records, then one line per record
+    reply = "ACTIVE_ALERTS " + request_number + " " + str(len(records)) + "\n"
+    for record in records:
+        reply += record + "\n"
+    return reply
+
+def handle_tcp_client(connection, address):
+    # Runs in its own thread, so a slow TCP client never blocks the UDP loop
+    with connection:
+        connection.settimeout(5)
+        try:
+            with connection.makefile("r", encoding="utf-8") as incoming:
+                line = incoming.readline()
+            print("TCP received:", line.strip())
+            print("From:", address)
+
+            with state_lock:
+                reply = get_active_alerts(line.split(), address)
+
+            connection.sendall(reply.encode("utf-8"))
+            print("TCP sent:", reply.strip())
+        except OSError as error:
+            print("TCP sync error:", error)
+
+
+def tcp_listener():
+    # Accepts TCP connections and starts a new thread for each client
+    tcp_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+    try:
+        tcp_server.bind((SERVER_IP, SERVER_TCP_PORT))
+    except OSError as error:
+        print("Cannot start TCP sync on port", SERVER_TCP_PORT, ":", error)
+        return
+
+    tcp_server.listen()
+    print("Listening for TCP sync on port", SERVER_TCP_PORT)
+
+    while True:
+        connection, address = tcp_server.accept()
+        threading.Thread(target=handle_tcp_client, args=(connection, address), daemon=True).start()
+
+
+# Start the TCP listener in the background (Section 2.10)
+threading.Thread(target=tcp_listener, daemon=True).start()
 
 # Keep server running
 while True:
