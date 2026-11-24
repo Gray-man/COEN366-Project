@@ -200,6 +200,15 @@ def main():
             client.settimeout(0.5) # Lets the receiver thread check regularly whether it should stop
             threading.Thread(target=receive_loop, args=(client, stop_receiver), daemon=True).start()
             print_menu(args.udp_port, session["name"])
+
+            # Section 4: a client restarted with --name is still registered on the
+            # (persistent) server, so it resumes by syncing the active incidents it
+            # may have missed while it was down. If the server is down, the user
+            # can run GET_ACTIVE_ALERTS again later.
+            if session["name"] is not None:
+                print("Resuming as", session["name"] + ": syncing active alerts with the server...")
+                get_active_alerts(next(rq_numbers), session["name"])
+
             while True:
                 fields = input("Please enter a command from the menu (or HELP to show menu again): ").split()
                 if not fields:
