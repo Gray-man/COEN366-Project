@@ -31,7 +31,7 @@ seen_notifications = set() # (Incident_ID, Version) pairs already processed, for
 def print_menu(udp_port, name):
     print(f"""
 -------------------------------------------------------------------------------
-WELCONE TO CENRS
+WELCOME TO CENRS
 
 Please choose a command from the menu below. Type HELP to show this menu again.
 1. REGISTER Name Role IP UDP_Port TCP_Port
